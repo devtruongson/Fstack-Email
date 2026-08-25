@@ -1,0 +1,47 @@
+# Multi-stage build that compiles the app from source (frontend + Go backend)
+# instead of pulling the prebuilt listmonk/listmonk image from Docker Hub.
+# Use this so custom changes to the code actually end up in the running container.
+
+# --- Stage 1: build the email-builder JS bundle -----------------------------
+FROM node:20-alpine AS email-builder
+WORKDIR /app/frontend/email-builder
+COPY frontend/email-builder/package.json frontend/email-builder/yarn.lock ./
+RUN (command -v yarn || npm install -g yarn) && yarn install --frozen-lockfile
+COPY frontend/email-builder/ ./
+RUN yarn build
+
+# --- Stage 2: build the main Vue frontend into frontend/dist -----------------
+FROM node:20-alpine AS frontend
+WORKDIR /app/frontend
+COPY frontend/package.json frontend/yarn.lock ./
+RUN (command -v yarn || npm install -g yarn) && yarn install --frozen-lockfile
+COPY frontend/ ./
+COPY --from=email-builder /app/frontend/email-builder/dist ./public/static/email-builder
+RUN yarn build
+
+# --- Stage 3: build the Go binary and pack all static assets into it --------
+FROM golang:1.24-alpine AS backend
+RUN apk add --no-cache git
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+COPY --from=frontend /app/frontend/dist ./frontend/dist
+RUN go install github.com/knadh/stuffbin/...
+RUN CGO_ENABLED=0 go build -o listmonk -ldflags="-s -w" ./cmd
+RUN "$(go env GOPATH)/bin/stuffbin" -a stuff -in listmonk -out listmonk \
+    config.toml.sample schema.sql queries:/queries permissions.json \
+    static/public:/public static/email-templates \
+    frontend/dist:/admin i18n:/i18n
+
+# --- Stage 4: final minimal runtime image ------------------------------------
+FROM alpine:latest
+RUN apk --no-cache add ca-certificates tzdata shadow su-exec
+WORKDIR /listmonk
+COPY --from=backend /app/listmonk .
+COPY config.toml.sample config.toml
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+EXPOSE 9000
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["./listmonk"]

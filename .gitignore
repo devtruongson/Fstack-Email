@@ -1,6 +1,5 @@
 frontend/node_modules/
 frontend/.cache/
-frontend/yarn.lock
 frontend/build/
 frontend/public/static/email-builder/
 frontend/dist/
@@ -13,6 +12,7 @@ static/public/static/altcha.umd.js
 .vscode/
 
 config.toml
+.env
 docker-compose.override.yml
 node_modules
 listmonk
