@@ -12,12 +12,15 @@ RUN yarn build
 
 # --- Stage 2: build the main Vue frontend into frontend/dist -----------------
 FROM node:20-alpine AS frontend
-WORKDIR /app/frontend
-COPY frontend/package.json frontend/yarn.lock ./
-RUN (command -v yarn || npm install -g yarn) && yarn install --frozen-lockfile
-COPY frontend/ ./
-COPY --from=email-builder /app/frontend/email-builder/dist ./public/static/email-builder
-RUN yarn build
+WORKDIR /app
+# frontend's postinstall script writes to ../static/public/static (relative to
+# frontend/), so that sibling directory must exist before `yarn install` runs.
+COPY static/public/static ./static/public/static
+COPY frontend/package.json frontend/yarn.lock frontend/
+RUN cd frontend && (command -v yarn || npm install -g yarn) && yarn install --frozen-lockfile
+COPY frontend/ frontend/
+COPY --from=email-builder /app/frontend/email-builder/dist frontend/public/static/email-builder
+RUN cd frontend && yarn build
 
 # --- Stage 3: build the Go binary and pack all static assets into it --------
 FROM golang:1.24-alpine AS backend
