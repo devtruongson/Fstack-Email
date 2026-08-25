@@ -21,6 +21,10 @@ RUN yarn build
 
 # --- Stage 3: build the Go binary and pack all static assets into it --------
 FROM golang:1.24-alpine AS backend
+# go.mod requires a newer Go version than this base image ships with.
+# Let Go auto-download the matching toolchain instead of pinning an exact
+# golang:X-alpine tag that may not exist yet on Docker Hub.
+ENV GOTOOLCHAIN=auto
 RUN apk add --no-cache git
 WORKDIR /app
 COPY go.mod go.sum ./
