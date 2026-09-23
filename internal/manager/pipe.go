@@ -74,11 +74,38 @@ func (m *Manager) newPipe(c *models.Campaign) (*pipe, error) {
 	return p, nil
 }
 
+// dailyLimitRecheckInterval is how often a pipe blocked on the daily send
+// limit is rechecked. NextSubscribers() runs on the single shared dispatch
+// loop that every running campaign funnels through (see Manager.Run()), so
+// blocking it for the remainder of the day (up to ~24h) would freeze every
+// other campaign along with it. A short, bounded sleep lets the loop keep
+// cycling through other pipes instead.
+const dailyLimitRecheckInterval = 30 * time.Second
+
 // NextSubscribers processes the next batch of subscribers in a given campaign.
 // It returns a bool indicating whether any subscribers were processed
 // in the current batch or not. A false indicates that all subscribers
 // have been processed, or that a campaign has been paused or cancelled.
 func (p *pipe) NextSubscribers() (bool, error) {
+	// Is there a daily send limit configured?
+	hasDailyLimit := p.m.cfg.DailySendLimit > 0
+
+	// If the daily limit was already reached, don't even fetch a new batch.
+	// Sleep briefly and ask the caller to re-queue this pipe so it's
+	// rechecked periodically instead of busy-querying the DB in a tight loop
+	// or blocking here until midnight.
+	if hasDailyLimit {
+		today := startOfDay(time.Now())
+		if today.After(p.m.dailyResetDate) {
+			p.m.dailyResetDate = today
+			p.m.dailyCount = 0
+		}
+		if p.m.dailyCount >= p.m.cfg.DailySendLimit {
+			time.Sleep(dailyLimitRecheckInterval)
+			return true, nil
+		}
+	}
+
 	// Fetch the next batch of subscribers from a 'running' campaign.
 	subs, err := p.m.store.NextSubscribers(p.camp.ID, p.m.cfg.BatchSize)
 	if err != nil {
@@ -95,9 +122,6 @@ func (p *pipe) NextSubscribers() (bool, error) {
 	hasSliding := p.m.cfg.SlidingWindow &&
 		p.m.cfg.SlidingWindowRate > 0 &&
 		p.m.cfg.SlidingWindowDuration.Seconds() > 1
-
-	// Is there a daily send limit configured?
-	hasDailyLimit := p.m.cfg.DailySendLimit > 0
 
 	// Push messages.
 	for _, s := range subs {
@@ -137,27 +161,17 @@ func (p *pipe) NextSubscribers() (bool, error) {
 			}
 		}
 
-		// Check if the daily send limit has been reached.
+		// Track the daily send limit. Once it's reached, stop sending the
+		// rest of this already-fetched batch immediately (don't overshoot
+		// the limit) and return; the top-of-function check above handles
+		// the actual waiting on the next call, without blocking this shared
+		// dispatch loop.
 		if hasDailyLimit {
-			today := startOfDay(time.Now())
-
-			// A new calendar day has started. Reset the counter.
-			if today.After(p.m.dailyResetDate) {
-				p.m.dailyResetDate = today
-				p.m.dailyCount = 0
-			}
-
 			p.m.dailyCount++
 			if p.m.dailyCount >= p.m.cfg.DailySendLimit {
-				tomorrow := today.AddDate(0, 0, 1)
-				wait := time.Until(tomorrow)
-
-				p.m.log.Printf("daily send limit (%d) reached. Sleeping for %s until midnight.",
-					p.m.cfg.DailySendLimit, wait.Round(time.Second))
-
-				p.m.dailyCount = 0
-				p.m.dailyResetDate = tomorrow
-				time.Sleep(wait)
+				p.m.log.Printf("daily send limit (%d) reached for campaign (%s). Pausing sends until midnight.",
+					p.m.cfg.DailySendLimit, p.camp.Name)
+				break
 			}
 		}
 	}
