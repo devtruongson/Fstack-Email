@@ -1,7 +1,7 @@
 services:
   listmonk_db:
     image: postgres:16-alpine
-    container_name: listmonk_db
+    container_name: fstack_email_db
     restart: unless-stopped
 
     environment:
@@ -27,7 +27,7 @@ services:
       context: .
       dockerfile: Dockerfile.source
     image: fstack-email:latest
-    container_name: listmonk_install
+    container_name: fstack_email_install
     restart: "no"
 
     depends_on:
@@ -61,7 +61,7 @@ services:
       context: .
       dockerfile: Dockerfile.source
     image: fstack-email:latest
-    container_name: listmonk
+    container_name: fstack_email
     restart: unless-stopped
 
     depends_on:
@@ -71,7 +71,7 @@ services:
         condition: service_completed_successfully
 
     ports:
-      - "9000:9000"
+      - "9001:9000"
 
     environment:
       LISTMONK_app__concurrency: 1
